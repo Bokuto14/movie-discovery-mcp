@@ -1,73 +1,259 @@
-AI-Powered Movie Discovery MCP Server
-This project is an advanced, AI-driven movie discovery and recommendation engine built as a Multi-Capability Protocol (MCP) server. It integrates a hybrid recommendation model, natural language processing (NLP) for sentiment analysis and mood-based searching, and a robust PostgreSQL backend to deliver a comprehensive and interactive movie discovery experience.
+# 🎬 AI-Powered Movie Discovery MCP Server
 
-The server is designed to be used with an agent like Claude, exposing its various machine learning and data processing capabilities as distinct, callable tools.
+An intelligent movie recommendation system that integrates with Claude Desktop via the Model Context Protocol (MCP). Features hybrid machine learning algorithms, natural language processing, and collaborative filtering to deliver personalized movie recommendations.
 
-Key Features
-Hybrid Recommendation System: Combines collaborative filtering (finding similar users based on rating correlations) and content-based filtering (recommending movies with similar genres, keywords, etc.) to provide nuanced and accurate suggestions.
+![Python](https://img.shields.io/badge/python-v3.12+-blue.svg)
+![PostgreSQL](https://img.shields.io/badge/postgresql-13+-blue.svg)
+![MCP](https://img.shields.io/badge/MCP-Protocol-green.svg)
+![License](https://img.shields.io/badge/license-MIT-blue.svg)
 
-NLP-Powered Mood Search: Allows users to find movies using natural language queries like "find me a funny movie for tonight" or "something thrilling but not too scary."
+## ✨ Features
 
-Sentiment Analysis: Automatically analyzes the sentiment of user-provided reviews (positive, negative, neutral) using textblob and extracts key aspects discussed (e.g., acting, plot, visuals).
+### 🤖 AI-Powered Recommendations
+- **Hybrid ML System**: Combines collaborative filtering with content-based filtering
+- **User Similarity Analysis**: Finds users with similar tastes using correlation algorithms
+- **Personalized Scoring**: Predicts ratings based on viewing history and preferences
 
-Comprehensive Database: Utilizes a PostgreSQL database to store detailed movie information, user data, ratings, and activity logs, all fetched and updated via the TMDB API.
+### 🧠 Natural Language Processing
+- **Mood-Based Search**: Understands queries like "funny action movie for tonight"
+- **Sentiment Analysis**: Analyzes user reviews using TextBlob for emotional insights
+- **Intent Recognition**: Maps natural language to genre preferences and filters
 
-User Analytics: Provides endpoints to analyze and summarize a user's viewing history, genre preferences, and rating habits.
+### 👥 Social Features
+- **Friend Review System**: Web interface for friends to rate and review movies
+- **Collaborative Filtering**: Leverages social data for better recommendations
+- **User Analytics**: Detailed preference analysis and viewing pattern insights
 
-MCP Server Architecture: Exposes all core functionalities as tools that can be listed and called by an MCP-compatible agent, enabling complex, conversational interactions.
+### 🎯 Claude Desktop Integration
+- **MCP Protocol**: Seamless integration with Claude Desktop
+- **8 Interactive Tools**: Search, recommend, rate, analyze preferences, and more
+- **Persistent Memory**: Remembers user preferences across conversations
 
-Tech Stack
-Backend: Python, Asyncio
+## 🛠️ Tech Stack
 
-Protocol: Multi-Capability Protocol (MCP)
+- **Backend**: Python 3.12, AsyncIO, PostgreSQL
+- **ML/NLP**: TextBlob, Collaborative Filtering, Content-Based Filtering
+- **APIs**: TMDB (The Movie Database) for real-time movie data
+- **Database**: PostgreSQL with asyncpg for async operations
+- **Web Interface**: Flask for friend review collection
+- **Protocol**: Model Context Protocol (MCP) for Claude Desktop integration
 
-Database: PostgreSQL with asyncpg
+## 📊 Database Schema
 
-Machine Learning:
+- **Movies**: 1100+ films with TMDB metadata, genres, ratings
+- **Users**: User profiles with preferences and viewing history  
+- **Ratings**: 3000+ user ratings with optional reviews
+- **Analytics**: User activity logs and recommendation tracking
 
-NLP: textblob
+## 🚀 Installation
 
-Data & ML Ops: pandas, scikit-learn
+### Prerequisites
+- Python 3.12+
+- PostgreSQL 13+
+- TMDB API Key
+- Claude Desktop (for MCP integration)
 
-API: Integration with The Movie Database (TMDB) API
+### Setup
 
-Setup and Installation
-Clone the repository:
+1. **Clone the repository**
+   ```bash
+   git clone https://github.com/yourusername/movie-discovery-mcp.git
+   cd movie-discovery-mcp
+   ```
 
-git clone https://github.com/your-username/AI-Movie-Discovery-Server.git
-cd AI-Movie-Discovery-Server
+2. **Create virtual environment**
+   ```bash
+   python -m venv movie_venv
+   source movie_venv/bin/activate  # On Windows: movie_venv\Scripts\activate
+   ```
 
-Create and activate a virtual environment:
+3. **Install dependencies**
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-python -m venv movie_venv
-source movie_venv/bin/activate  # On Windows, use `movie_venv\Scripts\activate`
+4. **Configure environment**
+   ```bash
+   cp .env.example .env
+   # Edit .env with your TMDB API key and database URL
+   ```
 
-Install the required dependencies:
+5. **Set up database**
+   ```bash
+   createdb movie_discovery
+   python setup_database.py
+   ```
 
-pip install -r requirements.txt
+6. **Populate with movie data**
+   ```bash
+   python fix_all_genres.py  # Fetch movie data from TMDB
+   ```
 
-Set up NLP components:
-This will download the necessary corpora for textblob.
+## 🎮 Usage
 
-python setup_nlp.py
+### Start MCP Server
+```bash
+python -m src.server
+```
 
-Set up the database:
-This project uses PostgreSQL. Make sure you have it installed and running on your local machine.
+### Configure Claude Desktop
+Add to your Claude Desktop configuration:
+```json
+{
+  "mcpServers": {
+    "movie-discovery": {
+      "command": "python",
+      "args": ["-m", "src.server"],
+      "cwd": "/path/to/movie-discovery-mcp"
+    }
+  }
+}
+```
 
-Configure environment variables:
-Create a .env file in the root directory and add your credentials. Do not commit this file to GitHub.
+### Example Commands in Claude Desktop
 
-DATABASE_URL="postgresql://USER:PASSWORD@HOST:PORT/DATABASE_NAME"
-TMDB_API_KEY="your_tmdb_api_key_here"
+**Get Personalized Recommendations:**
+```
+Get movie recommendations for Lakshya
+```
 
-Run the database setup script:
-To create all the necessary tables and indexes in your PostgreSQL database, run the setup script.
+**Mood-Based Search:**
+```
+Find me a funny action movie with comedy and adventure
+```
 
-python setup_database.py
+**Rate a Movie:**
+```
+Rate movie ID 299534 as 5 stars with review "Amazing superhero epic!"
+```
 
-How to Run the Server
-To start the MCP server, run the main server.py file from the root directory:
+**Analyze Preferences:**
+```
+Analyze Lakshya's viewing preferences
+```
 
-python server.py
+## 🔧 Available Tools
 
-The server will now be running and ready to accept connections from an MCP client or agent. You can interact with its tools, such as search_movies, get_personalized_recommendations, and mood_based_search.
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `search_movies` | Search for movies using TMDB API | query, limit |
+| `get_personalized_recommendations` | AI-powered personalized suggestions | username, limit |
+| `mood_based_search` | Natural language movie search | query, username, limit |
+| `rate_movie` | Add rating and review | username, movie_id, rating, review |
+| `analyze_user_preferences` | User preference analytics | username |
+| `analyze_movie_sentiment` | Sentiment analysis of reviews | movie_id |
+| `get_trending_movies` | Current trending films | time_period, limit |
+| `find_similar_movies` | Content-based similarity search | movie_id, limit |
+
+## 🌐 Friend Review System
+
+Start the web interface for collecting friend reviews:
+
+```bash
+python practical_friend_reviewer.py
+```
+
+Friends can visit `http://localhost:5000` to:
+- Rate movies from your database
+- Write detailed reviews
+- Generate automatic import scripts
+- Contribute to collaborative filtering
+
+## 📈 Machine Learning Algorithms
+
+### Collaborative Filtering
+- **User-Based**: Finds similar users based on rating patterns
+- **Pearson Correlation**: Measures user similarity 
+- **Prediction Algorithm**: Weighted average of similar users' ratings
+
+### Content-Based Filtering
+- **Genre Matching**: Recommends based on preferred genres
+- **Metadata Analysis**: Uses director, cast, keywords
+- **TF-IDF Similarity**: Text-based content matching
+
+### Hybrid Approach
+- **Weighted Combination**: Balances collaborative and content methods
+- **Cold Start Solution**: Uses content-based for new users
+- **Popularity Fallback**: Trending movies for sparse data
+
+## 🧪 Daily Updates
+
+Automatically fetch new movies and maintain fresh data:
+
+```bash
+python daily_movie_updater.py
+```
+
+This script:
+- Fetches trending movies from TMDB
+- Updates existing movie metadata
+- Respects API rate limits (1000 requests/day)
+- Maintains data quality and consistency
+
+## 📁 Project Structure
+
+```
+movie-discovery-mcp/
+├── src/
+│   ├── server.py              # Main MCP server
+│   ├── models/
+│   │   ├── database.py        # Database models and operations
+│   │   └── __init__.py
+│   └── __init__.py
+├── templates/
+│   └── friend_review.html     # Friend review interface
+├── friend_reviews/            # Generated import scripts
+├── practical_friend_reviewer.py  # Web server for reviews
+├── daily_movie_updater.py     # Automated data updates
+├── fix_all_genres.py          # Genre data maintenance
+├── requirements.txt           # Python dependencies
+├── .env.example              # Environment configuration template
+└── README.md                 # This file
+```
+
+## 🎯 Recommendation Algorithm Flow
+
+1. **User Profile Analysis**: Extract genre preferences, rating patterns
+2. **Similarity Calculation**: Find users with similar tastes using correlation
+3. **Candidate Generation**: Collect highly-rated movies from similar users
+4. **Content Filtering**: Apply genre preferences and metadata matching
+5. **Scoring & Ranking**: Combine collaborative and content-based scores
+6. **Diversity Enhancement**: Ensure variety in final recommendations
+
+## 🔮 Future Enhancements
+
+- **Neural Collaborative Filtering**: Deep learning recommendation models
+- **Movie Embeddings**: Vector representations using Word2Vec/FastText
+- **Advanced NLP**: Integration with spaCy or Transformers for better understanding
+- **Real-time Learning**: Online learning algorithms for immediate preference updates
+- **Streaming Integration**: API connections to Netflix, Hulu, Disney+ for availability
+- **Social Features**: User profiles, friend networks, movie discussions
+
+## 🤝 Contributing
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 🙏 Acknowledgments
+
+- **TMDB** for comprehensive movie database and API
+- **Anthropic** for Claude Desktop and MCP protocol
+- **PostgreSQL** for robust data storage
+- **TextBlob** for natural language processing capabilities
+
+## 📞 Contact
+
+Lakshya Bhatia - [lakshya14wrk@gmail.com](mailto:lakshya14wrk@gmail.com)
+
+Project Link: [https://github.com/yourusername/movie-discovery-mcp](https://github.com/yourusername/movie-discovery-mcp)
+
+---
+
+⭐ **Star this repository if you found it helpful!** ⭐
