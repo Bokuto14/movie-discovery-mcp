@@ -248,12 +248,10 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **PostgreSQL** for robust data storage
 - **TextBlob** for natural language processing capabilities
 
-## 📞 Contact
+## Contact
 
 Lakshya Bhatia - [lakshya14wrk@gmail.com](mailto:lakshya14wrk@gmail.com)
 
-Project Link: [https://github.com/yourusername/movie-discovery-mcp](https://github.com/yourusername/movie-discovery-mcp)
+Project Link: [https://github.com/yourusername/movie-discovery-mcp](https://github.com/Bokuto14/movie-discovery-mcp)
 
 ---
-
-⭐ **Star this repository if you found it helpful!** ⭐
