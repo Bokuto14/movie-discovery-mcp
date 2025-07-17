@@ -1,0 +1,23 @@
+# Virtual Environment
+movie_venv/
+venv/
+*.venv
+
+# Environment variables
+.env
+
+# Data files
+data/
+ml-latest-small/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+
+# IDE and OS files
+.idea/
+.vscode/
+*.DS_Store
+

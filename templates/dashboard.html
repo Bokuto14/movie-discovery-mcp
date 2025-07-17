@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎬 Movie Discovery Dashboard</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f8fafc;
+            color: #334155;
+            line-height: 1.6;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 2rem 0;
+            text-align: center;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 0.5rem;
+        }
+        
+        .header p {
+            font-size: 1.1rem;
+            opacity: 0.9;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 3rem;
+        }
+        
+        .stat-card {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 12px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            border-left: 4px solid #667eea;
+            transition: transform 0.2s ease;
+        }
+        
+        .stat-card:hover {
+            transform: translateY(-2px);
+        }
+        
+        .stat-number {
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: #667eea;
+            margin-bottom: 0.5rem;
+        }
+        
+        .stat-label {
+            font-size: 0.9rem;
+            color: #64748b;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .charts-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 2rem;
+            margin-bottom: 3rem;
+        }
+        
+        .chart-card {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 12px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .chart-title {
+            font-size: 1.2rem;
+            font-weight: bold;
+            margin-bottom: 1rem;
+            color: #1e293b;
+        }
+        
+        .chart-container {
+            position: relative;
+            height: 300px;
+        }
+        
+        .table-card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            overflow: hidden;
+            margin-bottom: 2rem;
+        }
+        
+        .table-header {
+            background: #667eea;
+            color: white;
+            padding: 1rem 1.5rem;
+            font-weight: bold;
+        }
+        
+        .table-content {
+            padding: 1.5rem;
+        }
+        
+        .data-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        
+        .data-table th,
+        .data-table td {
+            padding: 0.75rem;
+            text-align: left;
+            border-bottom: 1px solid #e2e8f0;
+        }
+        
+        .data-table th {
+            background: #f8fafc;
+            font-weight: 600;
+            color: #475569;
+        }
+        
+        .data-table tr:hover {
+            background: #f8fafc;
+        }
+        
+        .rating-badge {
+            background: #10b981;
+            color: white;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            font-weight: bold;
+        }
+        
+        .rating-badge.low {
+            background: #ef4444;
+        }
+        
+        .rating-badge.medium {
+            background: #f59e0b;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 2rem;
+            color: #64748b;
+        }
+        
+        .refresh-btn {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1rem;
+            margin-bottom: 2rem;
+            transition: background 0.2s;
+        }
+        
+        .refresh-btn:hover {
+            background: #5a67d8;
+        }
+        
+        .activity-item {
+            padding: 1rem 0;
+            border-bottom: 1px solid #e2e8f0;
+        }
+        
+        .activity-item:last-child {
+            border-bottom: none;
+        }
+        
+        .activity-user {
+            font-weight: bold;
+            color: #667eea;
+        }
+        
+        .activity-movie {
+            font-weight: 600;
+            color: #1e293b;
+        }
+        
+        .activity-time {
+            font-size: 0.8rem;
+            color: #64748b;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🎬 Movie Discovery Dashboard</h1>
+        <p>Analytics and insights for your movie recommendation system</p>
+    </div>
+    
+    <div class="container">
+        <button class="refresh-btn" onclick="refreshData()">🔄 Refresh Data</button>
+        
+        <div id="loading" class="loading">
+            <p>📊 Loading dashboard data...</p>
+        </div>
+        
+        <div id="dashboard" style="display: none;">
+            <!-- Basic Stats -->
+            <div class="stats-grid" id="statsGrid">
+                <!-- Stats cards will be populated here -->
+            </div>
+            
+            <!-- Charts -->
+            <div class="charts-grid">
+                <div class="chart-card">
+                    <div class="chart-title">📊 Rating Distribution</div>
+                    <div class="chart-container">
+                        <canvas id="ratingChart"></canvas>
+                    </div>
+                </div>
+                
+                <div class="chart-card">
+                    <div class="chart-title">🎭 Popular Genres</div>
+                    <div class="chart-container">
+                        <canvas id="genreChart"></canvas>
+                    </div>
+                </div>
+                
+                <div class="chart-card">
+                    <div class="chart-title">📈 Monthly Activity</div>
+                    <div class="chart-container">
+                        <canvas id="activityChart"></canvas>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Top Movies -->
+            <div class="table-card">
+                <div class="table-header">🏆 Most Rated Movies</div>
+                <div class="table-content">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Movie</th>
+                                <th>User Rating</th>
+                                <th>TMDb Rating</th>
+                                <th>Total Ratings</th>
+                            </tr>
+                        </thead>
+                        <tbody id="mostRatedTable">
+                            <!-- Data will be populated here -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <!-- Top Users -->
+            <div class="table-card">
+                <div class="table-header">👥 Most Active Users</div>
+                <div class="table-content">
+                    <table class="data-table">
+                        <thead>
+                            <tr>
+                                <th>Username</th>
+                                <th>Total Ratings</th>
+                                <th>Avg Rating</th>
+                                <th>Reviews</th>
+                                <th>Last Activity</th>
+                            </tr>
+                        </thead>
+                        <tbody id="userTable">
+                            <!-- Data will be populated here -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <!-- Recent Activity -->
+            <div class="table-card">
+                <div class="table-header">🕒 Recent Activity</div>
+                <div class="table-content" id="recentActivity">
+                    <!-- Recent activity will be populated here -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let charts = {};
+        
+        async function loadDashboard() {
+            try {
+                const response = await fetch('/api/stats');
+                const data = await response.json();
+                
+                populateStats(data.basic_stats);
+                createCharts(data);
+                populateTables(data);
+                populateRecentActivity(data.recent_activity);
+                
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('dashboard').style.display = 'block';
+                
+            } catch (error) {
+                console.error('Error loading dashboard:', error);
+                document.getElementById('loading').innerHTML = `
+                    <p style="color: #ef4444;">❌ Error loading dashboard data</p>
+                    <p>Make sure your database is running and try refreshing.</p>
+                `;
+            }
+        }
+        
+        function populateStats(stats) {
+            const statsGrid = document.getElementById('statsGrid');
+            statsGrid.innerHTML = `
+                <div class="stat-card">
+                    <div class="stat-number">${stats.total_movies}</div>
+                    <div class="stat-label">Total Movies</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">${stats.total_users}</div>
+                    <div class="stat-label">Total Users</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">${stats.total_ratings}</div>
+                    <div class="stat-label">Total Ratings</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">${stats.total_reviews}</div>
+                    <div class="stat-label">Written Reviews</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">${stats.avg_user_rating}</div>
+                    <div class="stat-label">Avg User Rating</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number">${stats.avg_tmdb_rating}</div>
+                    <div class="stat-label">Avg TMDb Rating</div>
+                </div>
+            `;
+        }
+        
+        function createCharts(data) {
+            // Rating Distribution Chart
+            const ratingCtx = document.getElementById('ratingChart').getContext('2d');
+            if (charts.rating) charts.rating.destroy();
+            charts.rating = new Chart(ratingCtx, {
+                type: 'bar',
+                data: {
+                    labels: data.rating_trends.rating_distribution.map(d => d.rating + ' ⭐'),
+                    datasets: [{
+                        label: 'Number of Ratings',
+                        data: data.rating_trends.rating_distribution.map(d => d.count),
+                        backgroundColor: 'rgba(102, 126, 234, 0.7)',
+                        borderColor: 'rgba(102, 126, 234, 1)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    }
+                }
+            });
+            
+            // Genre Chart
+            const genreCtx = document.getElementById('genreChart').getContext('2d');
+            if (charts.genre) charts.genre.destroy();
+            charts.genre = new Chart(genreCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: data.genre_stats.slice(0, 8).map(g => g.name),
+                    datasets: [{
+                        data: data.genre_stats.slice(0, 8).map(g => g.movie_count),
+                        backgroundColor: [
+                            '#667eea', '#764ba2', '#f093fb', '#f5576c',
+                            '#4ecdc4', '#44a08d', '#ffb75e', '#ed8936'
+                        ]
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false
+                }
+            });
+            
+            // Activity Chart
+            if (data.rating_trends.monthly_activity.length > 0) {
+                const activityCtx = document.getElementById('activityChart').getContext('2d');
+                if (charts.activity) charts.activity.destroy();
+                charts.activity = new Chart(activityCtx, {
+                    type: 'line',
+                    data: {
+                        labels: data.rating_trends.monthly_activity.map(d => d.month),
+                        datasets: [{
+                            label: 'Ratings per Month',
+                            data: data.rating_trends.monthly_activity.map(d => d.count),
+                            borderColor: '#667eea',
+                            backgroundColor: 'rgba(102, 126, 234, 0.1)',
+                            fill: true,
+                            tension: 0.4
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {
+                            legend: {
+                                display: false
+                            }
+                        }
+                    }
+                });
+            }
+        }
+        
+        function populateTables(data) {
+            // Most Rated Movies
+            const mostRatedTable = document.getElementById('mostRatedTable');
+            mostRatedTable.innerHTML = data.movie_stats.most_rated.map(movie => `
+                <tr>
+                    <td>${movie.title}</td>
+                    <td><span class="rating-badge ${getRatingClass(movie.user_rating)}">${movie.user_rating} ⭐</span></td>
+                    <td>${movie.tmdb_rating}/10</td>
+                    <td>${movie.rating_count}</td>
+                </tr>
+            `).join('');
+            
+            // Most Active Users
+            const userTable = document.getElementById('userTable');
+            userTable.innerHTML = data.user_stats.map(user => `
+                <tr>
+                    <td>${user.username}</td>
+                    <td>${user.rating_count}</td>
+                    <td>${user.avg_rating} ⭐</td>
+                    <td>${user.review_count}</td>
+                    <td>${user.last_activity ? new Date(user.last_activity).toLocaleDateString() : 'Never'}</td>
+                </tr>
+            `).join('');
+        }
+        
+        function populateRecentActivity(activities) {
+            const container = document.getElementById('recentActivity');
+            container.innerHTML = activities.map(activity => `
+                <div class="activity-item">
+                    <span class="activity-user">${activity.username}</span> rated 
+                    <span class="activity-movie">${activity.movie_title}</span> 
+                    <span class="rating-badge ${getRatingClass(activity.rating)}">${activity.rating} ⭐</span>
+                    <div class="activity-time">${new Date(activity.timestamp).toLocaleString()}</div>
+                    ${activity.review ? `<div style="margin-top: 0.5rem; font-style: italic; color: #64748b;">"${activity.review}"</div>` : ''}
+                </div>
+            `).join('');
+        }
+        
+        function getRatingClass(rating) {
+            if (rating >= 4) return 'high';
+            if (rating >= 3) return 'medium';
+            return 'low';
+        }
+        
+        async function refreshData() {
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('dashboard').style.display = 'none';
+            await loadDashboard();
+        }
+        
+        // Load dashboard on page load
+        window.addEventListener('load', loadDashboard);
+    </script>
+</body>
+</html>

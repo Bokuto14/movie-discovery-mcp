@@ -121,113 +121,128 @@ class EnhancedMovieDiscoveryServer:
         return enhanced_movie
     
     async def get_mood_based_recommendations(self, query: str, username: str = "demo_user", limit: int = 10) -> List[Dict]:
-        """Get movie recommendations based on natural language mood query"""
-        
-        # Analyze the query
+        """
+        COMPLETELY SAFE mood-based search that avoids JSON parsing in database
+        """
+        # Analyze the query (keep existing mood analyzer)
         analysis = self.mood_analyzer.analyze_query(query)
         
-        # Get user for personalization
         user = await self.get_user_or_create(username)
         user_id = user['user_id']
         
-        # Build dynamic SQL query based on analysis
-        conditions = []
-        params = []
-        param_count = 2
-        
-        # Add genre conditions
-        if analysis['genres']:
-            genre_conditions = []
-            for genre in analysis['genres']:
-                genre_conditions.append(f"m.genres::text ILIKE ${param_count}")
-                params.append(f'%"{genre}"%')
-                param_count += 1
-            conditions.append(f"({' OR '.join(genre_conditions)})")
-        
-        # Add runtime conditions
-        if 'max_runtime' in analysis['preferences']:
-            conditions.append(f"m.runtime <= ${param_count}")
-            params.append(analysis['preferences']['max_runtime'])
-            param_count += 1
-        
-        if 'min_runtime' in analysis['preferences']:
-            conditions.append(f"m.runtime >= ${param_count}")
-            params.append(analysis['preferences']['min_runtime'])
-            param_count += 1
-        
-        # Add rating conditions
-        min_rating = analysis['preferences'].get('min_rating', 6.0)
-        conditions.append(f"m.vote_average >= ${param_count}")
-        params.append(min_rating)
-        param_count += 1
-        
-        # Add year conditions
-        if 'release_year_min' in analysis['preferences']:
-            conditions.append(f"EXTRACT(YEAR FROM m.release_date) >= ${param_count}")
-            params.append(analysis['preferences']['release_year_min'])
-            param_count += 1
-        
-        if 'release_year_max' in analysis['preferences']:
-            conditions.append(f"EXTRACT(YEAR FROM m.release_date) <= ${param_count}")
-            params.append(analysis['preferences']['release_year_max'])
-            param_count += 1
-        
-        # Build final query
-        where_clause = " AND ".join(conditions) if conditions else "1=1"
-        
         async with movie_db.pool.acquire() as conn:
-            # Get movies matching mood criteria
+            # Get user's viewing history to avoid repetition
+            user_history = await conn.fetch("""
+                SELECT movie_id FROM user_ratings WHERE user_id = $1
+            """, user_id)
+            viewed_movie_ids = [r['movie_id'] for r in user_history]
+            
+            # Build base conditions (NO JSON PARSING)
+            base_conditions = ["m.vote_average >= 6.0"]
+            params = [user_id]
+            param_count = 2
+            
+            # Genre matching using simple text search (SAFE)
+            if analysis['genres']:
+                genre_conditions = []
+                for genre in analysis['genres']:
+                    # Use simple text search instead of JSON parsing
+                    genre_conditions.append(f"COALESCE(m.genres, '') ILIKE ${param_count}")
+                    params.append(f'%{genre}%')
+                    param_count += 1
+                # Use OR instead of requiring all genres
+                base_conditions.append(f"({' OR '.join(genre_conditions)})")
+            
+            # Runtime preferences
+            if 'max_runtime' in analysis['preferences']:
+                base_conditions.append(f"(m.runtime <= ${param_count} OR m.runtime IS NULL)")
+                params.append(analysis['preferences']['max_runtime'])
+                param_count += 1
+            
+            if 'min_runtime' in analysis['preferences']:
+                base_conditions.append(f"(m.runtime >= ${param_count} OR m.runtime IS NULL)")
+                params.append(analysis['preferences']['min_runtime'])
+                param_count += 1
+            
+            # Year preferences
+            if 'year_range' in analysis['preferences']:
+                year_start, year_end = analysis['preferences']['year_range']
+                base_conditions.append(f"(EXTRACT(YEAR FROM m.release_date) BETWEEN ${param_count} AND ${param_count + 1} OR m.release_date IS NULL)")
+                params.extend([year_start, year_end])
+                param_count += 2
+            
+            # Exclude viewed movies
+            if viewed_movie_ids:
+                base_conditions.append(f"m.movie_id != ALL(${param_count}::int[])")
+                params.append(viewed_movie_ids)
+                param_count += 1
+            
+            where_clause = " AND ".join(base_conditions)
+            
+            # Main query with diversity scoring (NO JSON FUNCTIONS)
             movies = await conn.fetch(f"""
-                WITH user_seen AS (
-                    SELECT movie_id FROM user_ratings WHERE user_id = $1
-                ),
-                mood_movies AS (
+                WITH mood_movies AS (
                     SELECT 
-                        m.*,
-                        COALESCE(AVG(ur.rating), m.vote_average/2) as avg_user_rating,
-                        COUNT(ur.rating) as rating_count
+                        m.movie_id,
+                        m.title,
+                        m.vote_average,
+                        m.genres,
+                        m.release_date,
+                        m.overview,
+                        m.runtime,
+                        COALESCE(m.popularity, 50) as popularity,
+                        COALESCE(ur.avg_rating, m.vote_average/2) as estimated_rating,
+                        COALESCE(ur.rating_count, 0) as rating_count,
+                        -- Diversity score: combines rating, popularity, and randomness
+                        (m.vote_average * 0.4 + 
+                        COALESCE(ur.avg_rating, 0) * 0.3 + 
+                        LEAST(COALESCE(m.popularity, 50)/20, 5) * 0.2 +
+                        RANDOM() * 0.1) as mood_score
                     FROM movies m
-                    LEFT JOIN user_ratings ur ON m.movie_id = ur.movie_id
+                    LEFT JOIN (
+                        SELECT 
+                            movie_id,
+                            AVG(rating) as avg_rating,
+                            COUNT(*) as rating_count
+                        FROM user_ratings 
+                        GROUP BY movie_id
+                    ) ur ON m.movie_id = ur.movie_id
                     WHERE {where_clause}
-                        AND m.movie_id NOT IN (SELECT movie_id FROM user_seen)
-                        AND m.vote_count >= 100
-                    GROUP BY m.movie_id, m.title, m.release_date, m.overview, 
-                             m.genres, m.vote_average, m.vote_count, m.popularity,
-                             m.runtime, m.budget, m.revenue, m.director, m.cast_members,
-                             m.crew_members, m.poster_url, m.backdrop_url,
-                             m.production_companies, m.production_countries,
-                             m.spoken_languages, m.keywords, m.created_at, m.updated_at
                 )
-                SELECT 
-                    mm.*,
-                    -- Mood score calculation
-                    (mm.avg_user_rating * 0.4 + 
-                     mm.vote_average/2 * 0.3 + 
-                     LEAST(mm.popularity/100, 5) * 0.3) as mood_score
-                FROM mood_movies mm
+                SELECT * FROM mood_movies
                 ORDER BY mood_score DESC
                 LIMIT ${param_count}
-            """, user_id, *params, limit)
+            """, *params, limit * 2)  # Get more for diversity
             
-            # Add sentiment analysis to results
+            # Process results safely in Python (not in database)
             results = []
             for movie in movies:
                 movie_dict = dict(movie)
                 
-                # Add sentiment if reviews exist
-                sentiment = await self.sentiment_analyzer.analyze_movie_sentiment(
-                    movie['movie_id'], conn
-                )
-                movie_dict['sentiment_analysis'] = sentiment
+                # Parse genres SAFELY in Python
+                try:
+                    if movie['genres'] and isinstance(movie['genres'], str):
+                        genres_data = json.loads(movie['genres'])
+                        if isinstance(genres_data, list):
+                            movie_dict['genre_names'] = [g.get('name', 'Unknown') for g in genres_data if isinstance(g, dict)]
+                        else:
+                            movie_dict['genre_names'] = []
+                    else:
+                        movie_dict['genre_names'] = []
+                except (json.JSONDecodeError, TypeError, AttributeError):
+                    movie_dict['genre_names'] = ['Unknown']
                 
-                # Add mood match explanation
+                # Add mood match info
                 movie_dict['mood_match'] = {
                     "matched_moods": analysis['moods'],
                     "matched_genres": [g for g in analysis['genres'] 
-                                     if g in movie_dict.get('genres', '')]
+                                    if any(g.lower() in gn.lower() for gn in movie_dict['genre_names'])]
                 }
                 
                 results.append(movie_dict)
+                
+                if len(results) >= limit:
+                    break
             
             return results
     
@@ -343,6 +358,209 @@ class EnhancedMovieDiscoveryServer:
         }
         
         return analysis
+
+    async def get_enhanced_recommendations_v2(self, username: str = "demo_user", limit: int = 10) -> List[Dict]:
+        """
+        Enhanced recommendation system that provides more diverse results
+        """
+        user = await self.get_user_or_create(username)
+        user_id = user['user_id']
+        
+        async with movie_db.pool.acquire() as conn:
+            # Get user's rating history to avoid repetition
+            user_rated_movies = await conn.fetch("""
+                SELECT movie_id FROM user_ratings WHERE user_id = $1
+            """, user_id)
+            
+            rated_movie_ids = [r['movie_id'] for r in user_rated_movies]
+            
+            # Strategy 1: Collaborative Filtering (if user has ratings)
+            collaborative_movies = []
+            if rated_movie_ids:
+                collaborative_movies = await conn.fetch("""
+                    WITH similar_users AS (
+                        -- Find users with similar tastes
+                        SELECT 
+                            ur2.user_id,
+                            COUNT(*) as common_movies,
+                            AVG(ABS(ur1.rating - ur2.rating)) as rating_diff
+                        FROM user_ratings ur1
+                        JOIN user_ratings ur2 ON ur1.movie_id = ur2.movie_id
+                        WHERE ur1.user_id = $1 AND ur2.user_id != $1
+                        GROUP BY ur2.user_id
+                        HAVING COUNT(*) >= 2
+                        ORDER BY rating_diff ASC, common_movies DESC
+                        LIMIT 10
+                    ),
+                    recommended_movies AS (
+                        -- Get highly rated movies from similar users
+                        SELECT 
+                            m.movie_id,
+                            m.title,
+                            m.vote_average,
+                            m.genres,
+                            m.release_date,
+                            m.overview,
+                            AVG(ur.rating) as predicted_rating,
+                            COUNT(ur.rating) as recommendation_strength,
+                            'collaborative' as source
+                        FROM similar_users su
+                        JOIN user_ratings ur ON su.user_id = ur.user_id
+                        JOIN movies m ON ur.movie_id = m.movie_id
+                        WHERE ur.rating >= 4.0
+                        AND ur.movie_id != ALL($2::int[])
+                        GROUP BY m.movie_id, m.title, m.vote_average, m.genres, m.release_date, m.overview
+                        HAVING COUNT(ur.rating) >= 2
+                    )
+                    SELECT * FROM recommended_movies
+                    ORDER BY predicted_rating DESC, recommendation_strength DESC
+                    LIMIT $3
+                """, user_id, rated_movie_ids, limit // 2)
+            
+            # Strategy 2: High-quality unrated movies (discovery)
+            remaining_slots = limit - len(collaborative_movies)
+            if remaining_slots > 0:
+                popular_unrated = await conn.fetch("""
+                    SELECT DISTINCT
+                        m.movie_id,
+                        m.title,
+                        m.vote_average,
+                        m.genres,
+                        m.release_date,
+                        m.overview,
+                        (m.vote_average / 2 + LEAST(m.popularity, 100) / 100 * 0.5) as predicted_rating,
+                        'discovery' as source
+                    FROM movies m
+                    LEFT JOIN user_ratings ur ON m.movie_id = ur.movie_id AND ur.user_id = $1
+                    WHERE ur.movie_id IS NULL
+                    AND m.vote_average >= 6.5
+                    AND m.movie_id != ALL($2::int[])
+                    ORDER BY predicted_rating DESC
+                    LIMIT $3
+                """, user_id, rated_movie_ids, remaining_slots)
+                
+                # Combine strategies
+                all_recommendations = list(collaborative_movies) + list(popular_unrated)
+            else:
+                all_recommendations = list(collaborative_movies)
+            
+            # Remove duplicates and limit results
+            seen_movies = set()
+            final_recommendations = []
+            
+            for movie in all_recommendations:
+                if movie['movie_id'] not in seen_movies and len(final_recommendations) < limit:
+                    seen_movies.add(movie['movie_id'])
+                    final_recommendations.append(dict(movie))
+            
+            # If still not enough, add some random high-quality movies
+            if len(final_recommendations) < limit:
+                fallback_movies = await conn.fetch("""
+                    SELECT 
+                        m.movie_id,
+                        m.title,
+                        m.vote_average,
+                        m.genres,
+                        m.release_date,
+                        m.overview,
+                        m.vote_average / 2 as predicted_rating,
+                        'fallback' as source
+                    FROM movies m
+                    WHERE m.vote_average >= 7.5
+                    AND m.movie_id != ALL($1::int[])
+                    AND m.movie_id != ALL($2::int[])
+                    ORDER BY RANDOM()
+                    LIMIT $3
+                """, rated_movie_ids, list(seen_movies), limit - len(final_recommendations))
+                
+                final_recommendations.extend([dict(movie) for movie in fallback_movies])
+            
+            return final_recommendations[:limit]
+
+    async def get_diverse_mood_recommendations_v2(self, query: str, username: str = "demo_user", limit: int = 10) -> List[Dict]:
+        """
+        Enhanced mood-based search with better diversity
+        """
+        # Analyze the query (reuse existing mood analyzer)
+        analysis = self.mood_analyzer.analyze_query(query)
+        
+        user = await self.get_user_or_create(username)
+        user_id = user['user_id']
+        
+        async with movie_db.pool.acquire() as conn:
+            # Get user's viewing history to avoid repetition
+            user_history = await conn.fetch("""
+                SELECT movie_id FROM user_ratings WHERE user_id = $1
+            """, user_id)
+            viewed_movie_ids = [r['movie_id'] for r in user_history]
+            
+            # Build a more flexible query
+            base_conditions = ["m.vote_average >= 6.0"]  # Lower threshold
+            params = [user_id]
+            param_count = 2
+            
+            # Genre matching (more flexible)
+            if analysis['genres']:
+                genre_conditions = []
+                for genre in analysis['genres']:
+                    genre_conditions.append(f"COALESCE(m.genres, '') ILIKE ${param_count}")
+                    params.append(f'%{genre}%')
+                    param_count += 1
+                # Use OR instead of requiring all genres
+                base_conditions.append(f"({' OR '.join(genre_conditions)})")
+            
+            # Runtime preferences (more flexible ranges)
+            if 'max_runtime' in analysis['preferences']:
+                base_conditions.append(f"(m.runtime <= ${param_count} OR m.runtime IS NULL)")
+                params.append(analysis['preferences']['max_runtime'])
+                param_count += 1
+            
+            # Exclude already viewed movies
+            if viewed_movie_ids:
+                base_conditions.append(f"m.movie_id != ALL(${param_count}::int[])")
+                params.append(viewed_movie_ids)
+                param_count += 1
+            
+            where_clause = " AND ".join(base_conditions)
+            
+            # Main query with diversity scoring
+            movies = await conn.fetch(f"""
+                WITH mood_movies AS (
+                    SELECT 
+                        m.movie_id,
+                        m.title,
+                        m.vote_average,
+                        m.genres,
+                        m.release_date,
+                        m.overview,
+                        m.runtime,
+                        COALESCE(m.popularity, 50) as popularity,
+                        COALESCE(ur.avg_rating, m.vote_average/2) as estimated_rating,
+                        COALESCE(ur.rating_count, 0) as rating_count,
+                        -- Diversity score: combines rating, popularity, and randomness
+                        (m.vote_average * 0.4 + 
+                        COALESCE(ur.avg_rating, 0) * 0.3 + 
+                        LEAST(COALESCE(m.popularity, 50)/20, 5) * 0.2 +
+                        RANDOM() * 0.1) as mood_score
+                    FROM movies m
+                    LEFT JOIN (
+                        SELECT 
+                            movie_id,
+                            AVG(rating) as avg_rating,
+                            COUNT(*) as rating_count
+                        FROM user_ratings 
+                        GROUP BY movie_id
+                    ) ur ON m.movie_id = ur.movie_id
+                    WHERE {where_clause}
+                )
+                SELECT * FROM mood_movies
+                ORDER BY mood_score DESC
+                LIMIT ${param_count}
+            """, *params, limit * 2)  # Get more results to ensure diversity
+            
+            # Return diverse results
+            results = [dict(movie) for movie in movies[:limit]]
+            return results
 
 
 class MoodAnalyzer:
@@ -720,48 +938,293 @@ async def handle_list_tools() -> List[types.Tool]:
                 },
                 "required": ["movie_id"]
             }
+        ),
+        types.Tool(
+            name="analyze_user_preferences",
+            description="Analyze a user's movie preferences and viewing patterns",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "username": {
+                        "type": "string",
+                        "description": "Username to analyze preferences for"
+                    }
+                },
+                "required": ["username"]
+            }
         )
     ]
 
 
 @app.call_tool()
 async def handle_call_tool(name: str, arguments: dict) -> List[types.TextContent]:
-    """Handle tool calls with enhanced ML features including NLP."""
+    """Handle tool calls with JSON-safe database operations."""
     try:
+        # ALSO REPLACE the search_movies section in your @app.call_tool() function:
+
         if name == "search_movies":
             query = arguments.get("query")
             limit = arguments.get("limit", 10)
             
-            # Search TMDB
-            data = await movie_server.fetch_tmdb_data("search/movie", {"query": query})
-            movies = data.get("results", [])[:limit]
+            if not query:
+                return [types.TextContent(type="text", text="Please provide a search query.")]
             
-            result = f"🎬 Found {len(movies)} movies for '{query}':\n\n"
-            for i, movie in enumerate(movies, 1):
-                # Store movie in database for future ML processing
-                await movie_server.get_enhanced_movie_details(movie['id'])
+            # Try TMDB search first for better results
+            try:
+                data = await movie_server.fetch_tmdb_data("search/movie", {"query": query})
+                tmdb_movies = data.get("results", [])[:limit]
                 
-                result += f"{i}. **{movie['title']}** ({movie.get('release_date', 'Unknown')[:4]})\n"
-                result += f"   ⭐ Rating: {movie['vote_average']}/10 | 🔥 Popularity: {movie['popularity']:.1f}\n"
-                result += f"   📝 {movie.get('overview', 'No overview available.')[:150]}...\n"
-                result += f"   🆔 ID: {movie['id']}\n\n"
+                if tmdb_movies:
+                    result = f"🎬 Found {len(tmdb_movies)} movies for '{query}':\n\n"
+                    for i, movie in enumerate(tmdb_movies, 1):
+                        # Store movie in database for future use
+                        try:
+                            await movie_server.get_enhanced_movie_details(movie['id'])
+                        except:
+                            pass
+                        
+                        release_year = str(movie.get('release_date', 'Unknown'))[:4] if movie.get('release_date') else 'Unknown'
+                        result += f"{i}. **{movie['title']}** ({release_year})\n"
+                        result += f"   ⭐ Rating: {movie['vote_average']}/10 | 🔥 Popularity: {movie['popularity']:.1f}\n"
+                        result += f"   📝 {movie.get('overview', 'No overview available.')[:150]}...\n"
+                        result += f"   🆔 ID: {movie['id']}\n\n"
+                    
+                    return [types.TextContent(type="text", text=result)]
+            except Exception as e:
+                # Fall back to database search if TMDB fails
+                pass
+            
+            # Database search as fallback
+            async with movie_db.pool.acquire() as conn:
+                movies = await conn.fetch("""
+                    SELECT 
+                        m.movie_id,
+                        m.title,
+                        m.vote_average,
+                        m.release_date,
+                        m.overview,
+                        m.runtime,
+                        CASE 
+                            WHEN LOWER(m.title) LIKE LOWER($2) THEN 100
+                            WHEN LOWER(m.title) LIKE LOWER($1) THEN 90
+                            WHEN LOWER(COALESCE(m.overview, '')) LIKE LOWER($1) THEN 80
+                            ELSE 70
+                        END as relevance_score
+                    FROM movies m
+                    WHERE (
+                        LOWER(m.title) LIKE LOWER($1)
+                        OR LOWER(COALESCE(m.overview, '')) LIKE LOWER($1)
+                    )
+                    AND m.vote_average >= 5.0
+                    ORDER BY 
+                        relevance_score DESC,
+                        m.vote_average DESC,
+                        COALESCE(m.popularity, 0) DESC
+                    LIMIT $3
+                """, f'%{query}%', f'{query}%', limit)
+            
+            if not movies:
+                result = f"🎬 No movies found for '{query}'\n\n"
+                result += "Try different keywords or check your database."
+            else:
+                result = f"🎬 Found {len(movies)} movies for '{query}':\n\n"
+                for i, movie in enumerate(movies, 1):
+                    release_year = str(movie.get('release_date', 'Unknown'))[:4] if movie.get('release_date') else 'Unknown'
+                    result += f"{i}. **{movie['title']}** ({release_year})\n"
+                    result += f"   ⭐ Rating: {movie['vote_average']}/10\n"
+                    if movie.get('overview'):
+                        result += f"   📝 {movie['overview'][:150]}...\n"
+                    result += f"   🆔 ID: {movie['movie_id']}\n\n"
+            
+            return [types.TextContent(type="text", text=result)]
+        
+        elif name == "analyze_user_preferences":
+            username = arguments.get("username")
+            
+            if not username:
+                return [types.TextContent(type="text", text="Please provide a username to analyze.")]
+            
+            # Get user
+            user = await movie_server.get_user_or_create(username)
+            user_id = user['user_id']
+            
+            async with movie_db.pool.acquire() as conn:
+                # Basic stats
+                basic_stats = await conn.fetchrow("""
+                    SELECT 
+                        COUNT(*) as total_ratings,
+                        AVG(rating) as avg_rating,
+                        COUNT(CASE WHEN review_text IS NOT NULL THEN 1 END) as reviews_written,
+                        COUNT(CASE WHEN rating >= 4.5 THEN 1 END) as favorites_count
+                    FROM user_ratings 
+                    WHERE user_id = $1
+                """, user_id)
+                
+                # Genre preferences
+                genre_prefs = await conn.fetch("""
+                    SELECT 
+                        genre_name,
+                        COUNT(*) as movie_count,
+                        AVG(rating) as avg_rating,
+                        COUNT(CASE WHEN rating >= 4.0 THEN 1 END) as high_ratings
+                    FROM (
+                        SELECT 
+                            ur.rating,
+                            jsonb_array_elements(m.genres::jsonb)->>'name' as genre_name
+                        FROM user_ratings ur
+                        JOIN movies m ON ur.movie_id = m.movie_id
+                        WHERE ur.user_id = $1
+                        AND m.genres IS NOT NULL
+                        AND m.genres != 'null'
+                    ) genre_ratings
+                    GROUP BY genre_name
+                    HAVING COUNT(*) >= 2
+                    ORDER BY AVG(rating) DESC, COUNT(*) DESC
+                """, user_id)
+                
+                # Recent activity
+                recent_ratings = await conn.fetch("""
+                    SELECT m.title, ur.rating, ur.created_at
+                    FROM user_ratings ur
+                    JOIN movies m ON ur.movie_id = m.movie_id
+                    WHERE ur.user_id = $1
+                    ORDER BY ur.created_at DESC
+                    LIMIT 5
+                """, user_id)
+                
+                # Rating distribution
+                rating_dist = await conn.fetch("""
+                    SELECT rating, COUNT(*) as count
+                    FROM user_ratings 
+                    WHERE user_id = $1
+                    GROUP BY rating
+                    ORDER BY rating DESC
+                """, user_id)
+            
+            # Format results
+            if basic_stats['total_ratings'] == 0:
+                result = f"📊 **{username}'s Movie Preferences**\n\n"
+                result += "No ratings found! Start rating some movies to see your preferences."
+            else:
+                result = f"📊 **{username}'s Movie Preferences Analysis**\n\n"
+                
+                # Basic stats
+                result += f"**📈 Rating Overview:**\n"
+                result += f"• Total movies rated: {basic_stats['total_ratings']}\n"
+                result += f"• Average rating: {float(basic_stats['avg_rating']):.1f}/5.0\n"
+                result += f"• Reviews written: {basic_stats['reviews_written']}\n"
+                result += f"• Favorites (4.5+ stars): {basic_stats['favorites_count']}\n\n"
+                
+                # Genre preferences
+                if genre_prefs:
+                    result += f"**🎭 Favorite Genres:**\n"
+                    for i, genre in enumerate(genre_prefs[:5], 1):
+                        result += f"{i}. {genre['genre_name']}: {float(genre['avg_rating']):.1f}/5 ({genre['movie_count']} movies)\n"
+                    result += "\n"
+                
+                # Rating patterns
+                if rating_dist:
+                    result += f"**⭐ Rating Distribution:**\n"
+                    for rating in rating_dist:
+                        stars = "⭐" * int(rating['rating'])
+                        result += f"{stars} ({rating['rating']}): {rating['count']} movies\n"
+                    result += "\n"
+                
+                # Recent activity
+                if recent_ratings:
+                    result += f"**🕒 Recent Activity:**\n"
+                    for rating in recent_ratings:
+                        result += f"• {rating['title']}: {rating['rating']}/5\n"
+                
+                # Personality insights
+                avg_rating = float(basic_stats['avg_rating'])
+                if avg_rating >= 4.0:
+                    result += f"\n**🎯 Viewing Style:** Enthusiastic viewer - you love most movies!\n"
+                elif avg_rating >= 3.5:
+                    result += f"\n**🎯 Viewing Style:** Balanced critic - you appreciate good cinema.\n"
+                elif avg_rating >= 3.0:
+                    result += f"\n**🎯 Viewing Style:** Selective viewer - you have high standards.\n"
+                else:
+                    result += f"\n**🎯 Viewing Style:** Tough critic - very discerning taste!\n"
             
             return [types.TextContent(type="text", text=result)]
         
         elif name == "get_personalized_recommendations":
-            username = arguments.get("username", "demo_user")
+            username = arguments.get("username")
             limit = arguments.get("limit", 10)
             
-            recommendations = await movie_server.get_personalized_recommendations(username, limit)
+            if not username:
+                return [types.TextContent(type="text", text="Please provide a username for personalized recommendations.")]
+            
+            # Get user safely
+            user = await movie_server.get_user_or_create(username)
+            user_id = user['user_id']
+            
+            # Use safe collaborative filtering
+            async with movie_db.pool.acquire() as conn:
+                # Get user's rated movies
+                user_movies = await conn.fetch("""
+                    SELECT movie_id FROM user_ratings WHERE user_id = $1
+                """, user_id)
+                
+                rated_movie_ids = [r['movie_id'] for r in user_movies]
+                
+                if not rated_movie_ids:
+                    # Return popular movies if no ratings
+                    recommendations = await conn.fetch("""
+                        SELECT 
+                            m.movie_id,
+                            m.title,
+                            m.vote_average,
+                            m.release_date,
+                            m.overview,
+                            m.vote_average / 2 as predicted_rating
+                        FROM movies m
+                        WHERE m.vote_average >= 7.5
+                        ORDER BY m.vote_average DESC
+                        LIMIT $1
+                    """, limit)
+                else:
+                    # Find similar users and get recommendations
+                    recommendations = await conn.fetch("""
+                        WITH similar_users AS (
+                            SELECT 
+                                ur2.user_id,
+                                COUNT(*) as common_movies,
+                                AVG(ABS(ur1.rating - ur2.rating)) as rating_diff
+                            FROM user_ratings ur1
+                            JOIN user_ratings ur2 ON ur1.movie_id = ur2.movie_id
+                            WHERE ur1.user_id = $1 AND ur2.user_id != $1
+                            GROUP BY ur2.user_id
+                            HAVING COUNT(*) >= 2
+                            ORDER BY rating_diff ASC, common_movies DESC
+                            LIMIT 10
+                        )
+                        SELECT 
+                            m.movie_id,
+                            m.title,
+                            m.vote_average,
+                            m.release_date,
+                            m.overview,
+                            AVG(ur.rating) as predicted_rating
+                        FROM similar_users su
+                        JOIN user_ratings ur ON su.user_id = ur.user_id
+                        JOIN movies m ON ur.movie_id = m.movie_id
+                        WHERE ur.rating >= 4.0
+                        AND ur.movie_id != ALL($2::int[])
+                        GROUP BY m.movie_id, m.title, m.vote_average, m.release_date, m.overview
+                        ORDER BY AVG(ur.rating) DESC
+                        LIMIT $3
+                    """, user_id, rated_movie_ids, limit)
             
             if not recommendations:
-                result = f"🤖 **No Personalized Recommendations Available**\n\n"
-                result += "Rate some movies first to get personalized suggestions!\n\n"
-                result += "Try using `rate_movie` to rate movies you've watched."
+                result = f"🤖 **No personalized recommendations found for {username}**\n\n"
+                result += "Rate some movies first to get better recommendations!"
             else:
                 result = f"🤖 **AI-Powered Recommendations for {username}**\n\n"
                 for i, movie in enumerate(recommendations, 1):
-                    result += f"{i}. **{movie['title']}** ({movie.get('release_date', 'Unknown')[:4]})\n"
+                    release_year = str(movie.get('release_date', 'Unknown'))[:4] if movie.get('release_date') else 'Unknown'
+                    result += f"{i}. **{movie['title']}** ({release_year})\n"
                     result += f"   ⭐ Rating: {movie['vote_average']}/10\n"
                     if 'predicted_rating' in movie:
                         result += f"   🎯 Predicted for you: {movie['predicted_rating']:.1f}/5.0\n"
@@ -770,15 +1233,22 @@ async def handle_call_tool(name: str, arguments: dict) -> List[types.TextContent
             return [types.TextContent(type="text", text=result)]
         
         elif name == "rate_movie":
-            username = arguments.get("username", "demo_user")
+            username = arguments.get("username")
             movie_id = arguments.get("movie_id")
             rating = arguments.get("rating")
             review = arguments.get("review")
             
+            if not username:
+                return [types.TextContent(type="text", text="Please provide a username.")]
+            if not movie_id:
+                return [types.TextContent(type="text", text="Please provide a movie ID.")]
+            if not rating:
+                return [types.TextContent(type="text", text="Please provide a rating (1-5).")]
+            
             # Get user
             user = await movie_server.get_user_or_create(username)
             
-            # Get movie details to show what was rated
+            # Get movie details
             try:
                 movie = await movie_server.get_enhanced_movie_details(movie_id)
                 movie_title = movie['title']
@@ -808,132 +1278,145 @@ async def handle_call_tool(name: str, arguments: dict) -> List[types.TextContent
                         result += f"• Polarity: {sentiment_data['polarity']} (-1 to 1 scale)\n"
                         if sentiment_data['aspects']:
                             result += f"• Discussed: {', '.join(sentiment_data['aspects'])}\n"
-                result += f"\n🤖 Your recommendations will now be updated based on this rating!"
+                result += f"\n🤖 Your recommendations will now be updated!"
             else:
                 result = f"❌ Failed to add rating. Please try again."
             
             return [types.TextContent(type="text", text=result)]
         
-        elif name == "analyze_user_preferences":
-            username = arguments.get("username", "demo_user")
-            
-            analysis = await movie_server.analyze_user_preferences(username)
-            
-            result = f"📊 **User Analysis for {username}**\n\n"
-            
-            profile = analysis['user_profile']
-            result += f"**📈 Profile Summary:**\n"
-            result += f"• Total Ratings: {profile['total_ratings']}\n"
-            result += f"• Average Rating: {profile['average_rating']}/5.0\n"
-            result += f"• Favorites: {profile['favorites_count']}\n"
-            result += f"• Recommendation Confidence: {analysis['recommendation_confidence'].title()}\n\n"
-            
-            if analysis['genre_preferences']:
-                result += f"**🎭 Favorite Genres:**\n"
-                for genre in analysis['genre_preferences']:
-                    result += f"• {genre['genre']}: {genre['avg_rating']:.1f}/5.0 avg ({genre['count']} movies)\n"
-                result += "\n"
-            
-            if analysis['recent_activity']:
-                result += f"**📊 Recent Activity (30 days):**\n"
-                for activity in analysis['recent_activity']:
-                    result += f"• {activity['activity_type'].title()}: {activity['count']} times\n"
-            else:
-                result += f"**📊 Recent Activity:** No recent activity\n"
-            
-            return [types.TextContent(type="text", text=result)]
-        
-        elif name == "get_trending_movies":
-            time_period = arguments.get("time_period", "week")
-            limit = arguments.get("limit", 20)
-            
-            movies = await movie_db.get_trending_movies(limit, time_period)
-            
-            result = f"📈 **Trending Movies This {time_period.title()}**\n\n"
-            for i, movie in enumerate(movies, 1):
-                result += f"{i}. **{movie['title']}** ({str(movie.get('release_date', 'Unknown'))[:4]})\n"
-                result += f"   ⭐ {movie['vote_average']}/10 | 🔥 Trending Score: {movie.get('trending_score', 0):.1f}\n"
-                result += f"   🆔 ID: {movie['movie_id']}\n\n"
-            
-            return [types.TextContent(type="text", text=result)]
-        
-        elif name == "find_similar_movies":
-            movie_id = arguments.get("movie_id")
-            limit = arguments.get("limit", 10)
-            
-            # Get the source movie details
-            source_movie = await movie_server.get_enhanced_movie_details(movie_id)
-            
-            # Find similar movies based on content
-            similar_movies = await movie_db.get_content_based_recommendations("demo_user", limit)
-            
-            result = f"🎭 **Movies Similar to '{source_movie['title']}'**\n\n"
-            result += f"Based on: {', '.join(source_movie.get('genres', []))}\n\n"
-            
-            for i, movie in enumerate(similar_movies, 1):
-                result += f"{i}. **{movie['title']}** ({str(movie.get('release_date', 'Unknown'))[:4]})\n"
-                result += f"   ⭐ Rating: {movie['vote_average']}/10\n"
-                result += f"   🎯 Similarity Score: {movie.get('score', 0):.1f}\n"
-                result += f"   🆔 ID: {movie['movie_id']}\n\n"
-            
-            return [types.TextContent(type="text", text=result)]
-        
+
         elif name == "mood_based_search":
             query = arguments.get("query")
-            username = arguments.get("username", "demo_user")
+            username = arguments.get("username", "anonymous")
             limit = arguments.get("limit", 10)
             
-            # Get recommendations
-            recommendations = await movie_server.get_mood_based_recommendations(query, username, limit)
+            if not query:
+                return [types.TextContent(type="text", text="Please provide a mood or preference query.")]
             
-            # Format response
-            result = f"🎭 **Mood-Based Recommendations for: '{query}'**\n\n"
+            # Map query to actual genres
+            query_lower = query.lower()
+            target_genres = []
             
-            if not recommendations:
-                result += "No movies found matching your mood. Try different keywords!"
-            else:
-                # Show what we understood
-                analysis = movie_server.mood_analyzer.analyze_query(query)
-                if analysis['moods']:
-                    result += f"**Detected Mood:** {', '.join(analysis['moods'])}\n"
-                if analysis['genres']:
-                    result += f"**Looking for:** {', '.join(set(analysis['genres']))} movies\n"
-                if analysis.get('context'):
-                    context_info = []
-                    if 'time_preference' in analysis['context']:
-                        context_info.append(f"Time: {analysis['context']['time_preference']}")
-                    if 'viewer_count' in analysis['context']:
-                        context_info.append(f"Viewers: {analysis['context']['viewer_count']}")
-                    if context_info:
-                        result += f"**Context:** {', '.join(context_info)}\n"
-                result += "\n"
+            if any(word in query_lower for word in ['funny', 'comedy', 'laugh', 'hilarious']):
+                target_genres.append('Comedy')
+            if any(word in query_lower for word in ['action', 'fight', 'adventure', 'explosion']):
+                target_genres.append('Action')
+            if any(word in query_lower for word in ['scary', 'horror', 'terror']):
+                target_genres.append('Horror')
+            if any(word in query_lower for word in ['romantic', 'love', 'romance']):
+                target_genres.append('Romance')
+            if any(word in query_lower for word in ['thriller', 'suspense', 'mystery']):
+                target_genres.append('Thriller')
+            
+            # Get user safely
+            user = await movie_server.get_user_or_create(username)
+            user_id = user['user_id']
+            
+            async with movie_db.pool.acquire() as conn:
+                # Get user's viewing history
+                user_history = await conn.fetch("""
+                    SELECT movie_id FROM user_ratings WHERE user_id = $1
+                """, user_id)
+                viewed_movie_ids = [r['movie_id'] for r in user_history]
                 
-                # Show recommendations
-                for i, movie in enumerate(recommendations, 1):
-                    result += f"{i}. **{movie['title']}** ({str(movie.get('release_date', 'Unknown'))[:4]})\n"
-                    result += f"   ⭐ Rating: {movie['vote_average']}/10"
+                if target_genres:
+                    # Build genre filter conditions
+                    genre_conditions = []
+                    for genre in target_genres:
+                        genre_conditions.append(f"m.genres::text ILIKE '%\"{genre}\"%'")
                     
-                    # Add mood score
-                    if 'mood_score' in movie:
-                        result += f" | 🎯 Mood Match: {movie['mood_score']:.1f}/5"
+                    if len(target_genres) > 1:
+                        # Multiple genres = require ALL (Action AND Comedy)
+                        genre_filter = " AND ".join(genre_conditions)
+                    else:
+                        # Single genre = just that genre
+                        genre_filter = " OR ".join(genre_conditions)
                     
-                    # Add sentiment if available
-                    if movie.get('sentiment_analysis') and movie['sentiment_analysis']['review_count'] > 0:
-                        sentiment = movie['sentiment_analysis']['overall_sentiment']
-                        emoji = {"very_positive": "😍", "positive": "😊", "mixed": "😐", 
-                                "negative": "😕", "very_negative": "😞"}.get(sentiment, "🤔")
-                        result += f" | {emoji} {sentiment.replace('_', ' ').title()}"
+                    # Build exclude condition
+                    if viewed_movie_ids:
+                        exclude_condition = "AND m.movie_id != ALL($1::int[])"
+                        exclude_params = [viewed_movie_ids]
+                    else:
+                        exclude_condition = ""
+                        exclude_params = []
                     
-                    # Add runtime if relevant to query
-                    if movie.get('runtime') and any(word in query.lower() for word in ['short', 'long', 'quick']):
-                        result += f" | ⏱️ {movie['runtime']} min"
+                    # Execute query with proper parameter handling
+                    if viewed_movie_ids:
+                        movies = await conn.fetch(f"""
+                            SELECT 
+                                m.movie_id,
+                                m.title,
+                                m.vote_average,
+                                m.release_date,
+                                m.overview,
+                                m.genres
+                            FROM movies m
+                            WHERE ({genre_filter})
+                            AND m.vote_average >= 6.5
+                            AND m.genres IS NOT NULL
+                            AND m.movie_id != ALL($1::int[])
+                            ORDER BY m.vote_average DESC, RANDOM()
+                            LIMIT $2
+                        """, viewed_movie_ids, limit)
+                    else:
+                        movies = await conn.fetch(f"""
+                            SELECT 
+                                m.movie_id,
+                                m.title,
+                                m.vote_average,
+                                m.release_date,
+                                m.overview,
+                                m.genres
+                            FROM movies m
+                            WHERE ({genre_filter})
+                            AND m.vote_average >= 6.5
+                            AND m.genres IS NOT NULL
+                            ORDER BY m.vote_average DESC, RANDOM()
+                            LIMIT $1
+                        """, limit)
+                else:
+                    # No specific genres - return popular movies
+                    if viewed_movie_ids:
+                        movies = await conn.fetch("""
+                            SELECT movie_id, title, vote_average, release_date, overview, genres
+                            FROM movies 
+                            WHERE vote_average >= 7.5 
+                            AND movie_id != ALL($1::int[])
+                            ORDER BY vote_average DESC 
+                            LIMIT $2
+                        """, viewed_movie_ids, limit)
+                    else:
+                        movies = await conn.fetch("""
+                            SELECT movie_id, title, vote_average, release_date, overview, genres
+                            FROM movies 
+                            WHERE vote_average >= 7.5 
+                            ORDER BY vote_average DESC 
+                            LIMIT $1
+                        """, limit)
+            
+            if not movies:
+                result = f"🎭 **No movies found for mood: '{query}'**\n\n"
+                result += f"Looking for: {', '.join(target_genres) if target_genres else 'Popular movies'}\n"
+                result += "Try different keywords or add more movies to your database!"
+            else:
+                result = f"🎭 **Mood-Based Recommendations: '{query}'**\n\n"
+                result += f"Found {len(movies)} movies with genres: {', '.join(target_genres) if target_genres else 'Popular movies'}\n\n"
+                
+                for i, movie in enumerate(movies, 1):
+                    release_year = str(movie.get('release_date', 'Unknown'))[:4] if movie.get('release_date') else 'Unknown'
+                    result += f"{i}. **{movie['title']}** ({release_year})\n"
+                    result += f"   ⭐ Rating: {movie['vote_average']}/10\n"
                     
-                    result += f"\n   🎬 {movie.get('overview', '')[:100]}...\n"
-                    
-                    # Show why it matched
-                    if movie.get('mood_match') and movie['mood_match']['matched_genres']:
-                        result += f"   💡 Matches: {', '.join(movie['mood_match']['matched_genres'])}\n"
-                    
+                    # Show genres
+                    try:
+                        if movie['genres']:
+                            import json
+                            genres_data = json.loads(movie['genres'])
+                            genre_names = [g['name'] for g in genres_data]
+                            result += f"   🎭 Genres: {', '.join(genre_names)}\n"
+                    except:
+                        pass
+                        
                     result += f"   🆔 ID: {movie['movie_id']}\n\n"
             
             return [types.TextContent(type="text", text=result)]
@@ -941,8 +1424,14 @@ async def handle_call_tool(name: str, arguments: dict) -> List[types.TextContent
         elif name == "analyze_movie_sentiment":
             movie_id = arguments.get("movie_id")
             
+            if not movie_id:
+                return [types.TextContent(type="text", text="Please provide a movie ID.")]
+            
             # Get movie details
-            movie = await movie_server.get_enhanced_movie_details(movie_id)
+            try:
+                movie = await movie_server.get_enhanced_movie_details(movie_id)
+            except:
+                return [types.TextContent(type="text", text="Movie not found.")]
             
             # Get sentiment analysis
             async with movie_db.pool.acquire() as conn:
@@ -953,81 +1442,90 @@ async def handle_call_tool(name: str, arguments: dict) -> List[types.TextContent
             
             if sentiment['review_count'] == 0:
                 result += "No reviews available for sentiment analysis.\n"
-                result += "Users need to add reviews for this movie first!\n\n"
-                result += "💡 **Tip:** Use the `rate_movie` tool with a review to add sentiment data."
+                result += "Users need to add reviews for this movie first!"
             else:
-                # Overall sentiment with emoji
-                sentiment_emoji = {
-                    "very_positive": "😍", 
-                    "positive": "😊", 
-                    "mixed": "😐", 
-                    "negative": "😕", 
-                    "very_negative": "😞"
-                }.get(sentiment['overall_sentiment'], "🤔")
+                result += f"📊 **Analysis Results:**\n"
+                result += f"• Overall Sentiment: {sentiment['overall_sentiment'].replace('_', ' ').title()}\n"
+                result += f"• Average Polarity: {sentiment['average_polarity']}\n"
+                result += f"• Reviews Analyzed: {sentiment['review_count']}\n\n"
                 
-                result += f"**Overall Sentiment:** {sentiment_emoji} {sentiment['overall_sentiment'].replace('_', ' ').title()}\n"
-                result += f"**Based on:** {sentiment['review_count']} reviews\n"
-                result += f"**Average Polarity:** {sentiment['average_polarity']} "
+                if sentiment['sentiment_distribution']:
+                    result += f"**Sentiment Breakdown:**\n"
+                    for sentiment_type, count in sentiment['sentiment_distribution'].items():
+                        result += f"• {sentiment_type.title()}: {count}\n"
                 
-                # Explain polarity
-                if sentiment['average_polarity'] > 0.5:
-                    result += "(Very Positive)\n\n"
-                elif sentiment['average_polarity'] > 0:
-                    result += "(Positive)\n\n"
-                elif sentiment['average_polarity'] < -0.5:
-                    result += "(Very Negative)\n\n"
-                elif sentiment['average_polarity'] < 0:
-                    result += "(Negative)\n\n"
-                else:
-                    result += "(Neutral)\n\n"
-                
-                # Sentiment distribution
-                result += "**📊 Sentiment Distribution:**\n"
-                dist = sentiment['sentiment_distribution']
-                total = sum(dist.values())
-                
-                # Create visual bars
-                for sent_type in ['positive', 'negative', 'neutral']:
-                    count = dist.get(sent_type, 0)
-                    percent = (count / total) * 100 if total > 0 else 0
-                    bar_length = int(percent / 10)  # Scale to 10 chars
-                    bar = "█" * bar_length + "░" * (10 - bar_length)
-                    emoji = {"positive": "😊", "negative": "😕", "neutral": "😐"}.get(sent_type, "")
-                    result += f"{emoji} {sent_type.title()}: {bar} {count} ({percent:.1f}%)\n"
-                
-                # Top discussed aspects
-                if sentiment.get('top_aspects'):
-                    result += "\n**🎬 Most Discussed Aspects:**\n"
-                    aspect_emojis = {
-                        "acting": "🎭",
-                        "story": "📖",
-                        "direction": "🎬",
-                        "visuals": "🎨",
-                        "music": "🎵",
-                        "pacing": "⏱️",
-                        "emotion": "❤️"
-                    }
+                if sentiment['top_aspects']:
+                    result += f"\n**Most Discussed Aspects:**\n"
                     for aspect, count in sentiment['top_aspects']:
-                        emoji = aspect_emojis.get(aspect, "•")
-                        result += f"{emoji} {aspect.title()}: mentioned {count} times\n"
-                
-                # Sample reviews if available
-                result += "\n💡 **Tip:** Add more reviews to improve sentiment accuracy!"
+                        result += f"• {aspect}: mentioned {count} times\n"
             
             return [types.TextContent(type="text", text=result)]
         
+        elif name == "get_trending_movies":
+            time_period = arguments.get("time_period", "week")
+            limit = arguments.get("limit", 20)
+            
+            # Get trending from TMDB
+            try:
+                data = await movie_server.fetch_tmdb_data(f"trending/movie/{time_period}")
+                movies = data.get("results", [])[:limit]
+                
+                result = f"🔥 **Trending Movies This {time_period.title()}**\n\n"
+                for i, movie in enumerate(movies, 1):
+                    # Store movie for future use
+                    try:
+                        await movie_server.get_enhanced_movie_details(movie['id'])
+                    except:
+                        pass
+                    
+                    release_year = str(movie.get('release_date', 'Unknown'))[:4] if movie.get('release_date') else 'Unknown'
+                    result += f"{i}. **{movie['title']}** ({release_year})\n"
+                    result += f"   ⭐ Rating: {movie['vote_average']}/10 | 🔥 Popularity: {movie['popularity']:.1f}\n"
+                    result += f"   🆔 ID: {movie['id']}\n\n"
+                
+                return [types.TextContent(type="text", text=result)]
+            except Exception as e:
+                return [types.TextContent(type="text", text=f"❌ Error getting trending movies: {str(e)}")]
+        
+        elif name == "find_similar_movies":
+            movie_id = arguments.get("movie_id")
+            limit = arguments.get("limit", 10)
+            
+            if not movie_id:
+                return [types.TextContent(type="text", text="Please provide a movie ID.")]
+            
+            # Get the source movie details
+            try:
+                source_movie = await movie_server.get_enhanced_movie_details(movie_id)
+            except:
+                return [types.TextContent(type="text", text="Source movie not found.")]
+            
+            # Find similar movies using TMDB
+            try:
+                data = await movie_server.fetch_tmdb_data(f"movie/{movie_id}/similar")
+                similar_movies = data.get("results", [])[:limit]
+                
+                result = f"🎭 **Movies Similar to '{source_movie['title']}'**\n\n"
+                
+                if not similar_movies:
+                    result += "No similar movies found."
+                else:
+                    for i, movie in enumerate(similar_movies, 1):
+                        release_year = str(movie.get('release_date', 'Unknown'))[:4] if movie.get('release_date') else 'Unknown'
+                        result += f"{i}. **{movie['title']}** ({release_year})\n"
+                        result += f"   ⭐ Rating: {movie['vote_average']}/10\n"
+                        result += f"   🆔 ID: {movie['id']}\n\n"
+                
+                return [types.TextContent(type="text", text=result)]
+            except Exception as e:
+                return [types.TextContent(type="text", text=f"❌ Error finding similar movies: {str(e)}")]
+        
         else:
-            return [types.TextContent(
-                type="text",
-                text=f"❌ Unknown tool: {name}"
-            )]
+            return [types.TextContent(type="text", text=f"❌ Unknown tool: {name}")]
     
     except Exception as e:
-        logger.error(f"Error in {name}: {e}")
-        return [types.TextContent(
-            type="text",
-            text=f"❌ Error: {str(e)}\n\nPlease check the logs for more details."
-        )]
+        error_msg = f"❌ Error in {name}: {str(e)}"
+        return [types.TextContent(type="text", text=error_msg)]
 
 
 async def main():

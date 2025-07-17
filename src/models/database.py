@@ -245,7 +245,14 @@ class PostgreSQLMovieDatabase:
             favorite_genres = []
             for pref in user_preferences[:3]:  # Top 3 genre combinations
                 if pref['genres']:
-                    favorite_genres.extend(json.loads(pref['genres']))
+                    genres_data = json.loads(pref['genres']) if isinstance(pref['genres'], str) else pref['genres']
+                    # Extract just the genre names
+                    if isinstance(genres_data, list):
+                        for genre in genres_data:
+                            if isinstance(genre, dict) and 'name' in genre:
+                                favorite_genres.append(genre['name'])
+                            elif isinstance(genre, str):
+                                favorite_genres.append(genre)
             
             # Find movies with similar genres
             recommendations = await conn.fetch("""
