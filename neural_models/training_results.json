@@ -1,0 +1,39 @@
+{
+  "training_metrics": {
+    "final_train_loss": 0.2331002801656723,
+    "final_val_loss": 0.8612502217292786,
+    "final_train_mae": 0.3701753616333008,
+    "final_val_mae": 0.7147228717803955,
+    "final_train_rmse": 0.47608473896980286,
+    "final_val_rmse": 0.9245555996894836,
+    "epochs_trained": 50,
+    "total_parameters": 209854
+  },
+  "comparison_results": {
+    "collaborative_filtering": {
+      "rmse": 1.1623527131586324,
+      "mae": 0.9290780141843972
+    },
+    "neural_embeddings": {
+      "rmse": 0.977723212002663,
+      "mae": 0.7869725497901863
+    },
+    "improvements": {
+      "rmse_improvement_percent": 15.88412011825984,
+      "mae_improvement_percent": 15.295320976781479
+    },
+    "samples_compared": 141
+  },
+  "timestamp": "2025-07-20T14:48:49.963064",
+  "model_config": {
+    "embedding_dim": 128,
+    "hidden_dims": [
+      256,
+      128,
+      64
+    ],
+    "dropout_rate": 0.3,
+    "l2_reg": 1e-05,
+    "learning_rate": 0.001
+  }
+}
