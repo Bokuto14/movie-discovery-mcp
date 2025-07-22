@@ -287,7 +287,6 @@ movie-discovery-mcp/
 - **Kubernetes deployment** with auto-scaling
 - **Redis caching layer** for distributed systems
 - **Model serving optimization** with TensorFlow Serving
-- **MLOps pipeline** with automated testing and deployment
 
 ## 🤝 **Contributing**
 
